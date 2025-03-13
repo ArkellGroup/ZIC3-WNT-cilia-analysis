@@ -1,0 +1,246 @@
+---
+title: "Cbf_analysis_stats"
+author: "Kyle Drover"
+date: "2023-09-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setting up
+
+Loading libraries and setting up functions
+
+```{r}
+library(remotes)
+install_github("cran/estimability")
+```
+
+
+```{r}
+if(!require(Hmisc))install.packages("Hmisc")
+if(!require(multcomp))install.packages("multcomp")
+if(!require(emmeans))install.packages("emmeans")
+library(readr)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(Hmisc)
+library(multcomp)
+library(emmeans)
+
+
+genotype_names <- list(
+  "WT" = expression(bolditalic("Zic3")^bolditalic("+/+")),
+  "Mut" = expression(bolditalic("Zic3")^bolditalic("Ka/Y"))
+)
+
+# looks complicated, cause it is. It a function that labels things well 
+genotype_labeller <- function(variable,value){return(genotype_names[value])}
+```
+
+## reading and arranging data
+
+You can also embed plots, for example:
+
+```{r}
+Katuns <- c("Ka96_e3", "Ka109_e4", "Ka109_e5")
+cbf_data <- read_csv("Cilarrmove_results_for_plotting.csv") %>% mutate(Genotype = ifelse((Embryo_Id %in% Katuns),"Mut", "WT"))
+
+cbf_data$Video_No. <- as.character(cbf_data$Video_No.)
+
+cbf_data <- arrange(transform(cbf_data, Genotype=factor(Genotype,levels=c("WT","Mut"))))
+```
+
+## Part 1 plotting histograms:
+
+Before removing 0-1 (i.e., spaces where the values were negative space which is highly dependent on what orientation the cilia is at)
+```{r, fig.height=15}
+ggplot(cbf_data, aes(x=Frequency..Hz., y=Percentage...., col=interaction(Video_No., Embryo_Id)))+
+  geom_line()+
+  facet_wrap(~Embryo_Id, ncol=1)
+
+
+
+ggplot(cbf_data, aes(x=Frequency..Hz., y=Percentage...., col=Embryo_Id))+
+  geom_line()+
+  facet_wrap(~Embryo_Id, ncol=1)
+
+ggplot(cbf_data, aes(x=Frequency..Hz., y=Percentage...., col=Genotype))+
+  geom_bar(stat="identity")+
+  facet_wrap(~Genotype, ncol=1)
+```
+
+```{r}
+# define colour scheme
+WT_shades <- "#425AA7"
+Mut_shades <- "#BA89AC"
+
+embryo_shades <- c("#425AA7","#425AA7","#BA89AC","#BA89AC","#425AA7","#425AA7","#425AA7","#BA89AC")
+embryo_shades_WM <- c("#425AA7","#425AA7","#425AA7","#425AA7","#425AA7","#BA89AC","#BA89AC","#BA89AC")
+```
+
+
+After removing 0-1:
+```{r, fig.height=7, fig.width=7}
+
+cbf_cleaned <- cbf_data %>% filter(Frequency..Hz. > 1)
+
+# individual cilia frequency plots
+Indiv_hz <-   ggplot(cbf_cleaned, aes(x=Frequency..Hz., y=Percentage...., col=interaction(Video_No., Embryo_Id)))+
+              geom_line()+
+              facet_wrap(~Embryo_Id, ncol=1)
+
+# average frequency plot per embryo
+Embryo_hz <-  ggplot(cbf_cleaned, aes(x=Frequency..Hz., y=Percentage...., col=Embryo_Id))+
+              geom_line()+
+              facet_wrap(~Embryo_Id, ncol=1)+
+              scale_color_manual(values = embryo_shades) 
+
+# average frequency per genotype
+Genotype_hz <-  ggplot(cbf_cleaned, aes(x=Frequency..Hz., y=Percentage...., col=Genotype))+
+                geom_bar(stat="identity")+
+                facet_wrap(~Genotype, ncol=1)+
+                scale_color_manual(values = c(WT_shades, Mut_shades)) 
+
+
+Indiv_hz
+Embryo_hz
+Genotype_hz
+
+```
+
+```{r}
+ggsave("Embryo_cilia_hz.png", plot = Embryo_hz, dpi=300, height = 7, width = 7, units = "in")
+ggsave("Ind_cilia_hz.png", plot = Indiv_hz, dpi=300, height = 7, width = 7, units = "in")
+ggsave("Genotype_cilia_hz.png", plot = Genotype_hz, dpi=300, height = 7, width = 7, units = "in")
+
+```
+
+
+## Part 2- Plotting weighted mean + S.E.M
+
+
+``` {r}
+# groups data per variable and then calculates the wieghted average + S.E.M
+weighted_mean_per_embryo <- cbf_cleaned %>%
+                            group_by(Embryo_Id) %>%
+                            dplyr::summarize(weighted_mean_value = weighted.mean(Frequency..Hz., w = Percentage....),
+                                      weighted_var_value = wtd.var(Frequency..Hz.,Percentage....),
+                                      weighted_n = sum(Percentage....),
+                                      weighted_sem_value = sqrt(weighted_var_value / weighted_n))
+
+
+weighted_mean_per_embryo_per_vid <- cbf_cleaned %>%
+                                    group_by(Embryo_Id, Video_No.) %>%
+                                    dplyr::summarize(weighted_mean_value = weighted.mean(Frequency..Hz., w = Percentage....),
+                                                     weighted_var_value = wtd.var(Frequency..Hz.,Percentage....),
+                                                     weights = sum( (Percentage.... / sum(Percentage....))^2 ),
+                                                     weighted_sem_value = sqrt(weighted_var_value* weights))
+
+
+weighted_mean_per_genotype <- cbf_cleaned %>%
+                              group_by(Genotype) %>%
+                              dplyr::summarize(weighted_mean_value = weighted.mean(Frequency..Hz., w = Percentage....),
+                                               weighted_var_value = wtd.var(Frequency..Hz.,Percentage....),
+                                               weights = sum( (Percentage.... / sum(Percentage....))^2 ),
+                                               weighted_sem_value = sqrt(weighted_var_value* weights))
+```
+  
+```{r, fig.height=2.5, fig.width=4}  
+
+# plot individual videos
+WMbar_ind <-  ggplot(weighted_mean_per_embryo_per_vid, aes(x = interaction(Video_No., Embryo_Id), y = weighted_mean_value, fill=Embryo_Id))               +
+              geom_bar(stat = "identity") +
+              geom_errorbar(aes(ymin = weighted_mean_value - weighted_sem_value, ymax = weighted_mean_value + weighted_sem_value),
+                            width = 0.2, color = "black") +
+              scale_x_discrete(guide = guide_axis(n.dodge=6))+
+              labs(title = "Weighted Mean and WSE per Embryo",
+                   x = "Each Individual Video",
+                   y = "Weighted Mean") +
+              theme_minimal()
+
+# plot average per embryo
+WMbar_embryo <- ggplot(weighted_mean_per_embryo, aes(x = Embryo_Id, y = weighted_mean_value, fill=Embryo_Id)) +
+                geom_bar(stat = "identity") +
+                geom_errorbar(aes(ymin = weighted_mean_value - weighted_sem_value, ymax = weighted_mean_value + weighted_sem_value),
+                              width = 0.2, color = "black") +
+                labs(title = "Weighted Mean and WSE per Embryo",
+                     x = "Embryo Id",
+                     y = "Weighted Mean") +
+                theme_minimal()+
+                scale_fill_manual(labels = unlist(genotype_names), values=embryo_shades_WM)
+
+
+# plot average per genotype
+WMbar_genotype <- ggplot(weighted_mean_per_genotype, aes(x = Genotype, y = weighted_mean_value, fill=Genotype)) +
+                geom_bar(stat = "identity") +
+                geom_errorbar(aes(ymin = weighted_mean_value - weighted_sem_value, ymax = weighted_mean_value + weighted_sem_value),
+                              width = 0.2, color = "black") +
+                labs(title = "Weighted Mean and WSE per Genotype",
+                     x = "Genotype",
+                     y = "Weighted Mean") +
+                scale_fill_manual(labels = unlist(genotype_names), values=c(WT_shades, Mut_shades))+
+                scale_x_discrete(labels = unlist(genotype_names))+
+                theme_minimal()
+
+WMbar_ind
+WMbar_embryo
+WMbar_genotype
+```
+
+
+```{r}
+ggsave("Embryo_cilia_WM.png", plot = WMbar_embryo, dpi=300, height = 2.5, width = 4, units = "in")
+ggsave("Ind_cilia_WM.png", plot = WMbar_ind, dpi=300, height = 2.5, width = 4, units = "in")
+ggsave("Genotype_cilia_WM.png", plot = WMbar_genotype, dpi=300, height = 2.5, width = 4, units = "in")
+```
+
+## Part 3 Stats:
+
+Just comparing Genotypes:
+
+```{r}
+
+data_for_stats <- cbf_cleaned
+
+data_for_stats$Embryo_Id <- as.factor(data_for_stats$Embryo_Id)
+
+
+genotype_test <- aov(Frequency..Hz.~Genotype, data=data_for_stats)
+
+
+summary(genotype_test)
+
+```
+
+
+Comparing individual embryos
+```{r}
+
+# perform a ANOVA across all embryos to show a statistical difference and then go and do the post-hoc test
+Embryo_Id_test <- aov(Frequency..Hz.~Embryo_Id, data=data_for_stats)
+summary(Embryo_Id_test)
+
+
+```
+
+
+```{r}
+#So there's a couple of different ways of doing the contrasts. One is using Tukey's
+posthoc <- glht(Embryo_Id_test, linfct=mcp(Embryo_Id="Tukey"))
+cat("\n")
+cld(posthoc)
+```
+```{r}
+#the others is using eemenas
+ID_test <- emmeans(Embryo_Id_test, "Embryo_Id")
+
+cld(ID_test)
+
+```
+
+
+
